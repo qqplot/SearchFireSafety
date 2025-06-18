@@ -32,7 +32,7 @@ We benchmarked six retrieval methods, finding that dense retrievers, especially 
 | `doc_id`                                         | `0`                                  | Sequential integer.                  |
 | `semantic_id`                                    | `NFPC‑101_1조`                        | Law‑code + article slug.             |
 | `collection_name`                                | `소방시설 설치 및 관리에 관한 법률`                | Parent statute.                      |
-| `law_level`                                      | `행정규칙`                               | 법률 / 시행령 / 행정규칙 등.                     |
+| `law_level`                                      | `행정규칙`                               | Law level (법률 / 시행령 / 행정규칙 etc)                     |
 | `law_name`                                       | Full statute title.                  |                                      |
 | `chapter`, `chapter_description`, `chapter_body` | Text content.                        |                                      |
 | `deleted`                                        | `false`                              | `true` if the provision is repealed. |
