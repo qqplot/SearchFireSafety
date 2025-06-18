@@ -114,8 +114,8 @@ python inference.py \
     --openai_key_file ~/.openai_key
 ```
 
-\* Open‑source models are loaded via `AutoModelForCausalLM`; OpenAI models are indicated by the prefix `openai:`.
-\* `--oracle` makes the generator see **gold** document ids instead of retrieved ones (upper‑bound).
+Open‑source models are loaded via `AutoModelForCausalLM`; OpenAI models are indicated by the prefix `openai:`.
+`--oracle` makes the generator see **gold** document ids instead of retrieved ones (upper‑bound).
 
 Each model creates one JSONL file:
 
