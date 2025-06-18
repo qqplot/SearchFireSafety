@@ -51,21 +51,21 @@ Run all cells—each URL is downloaded, parsed chapter‑by‑chapter, and the r
 
 ```python
 url_list = [
-    "https://www.law.go.kr/법령/헌법",
-    "https://www.law.go.kr/법령/개인정보보호법",
+    "https://www.law.go.kr/법령/소방기본법",
+    "https://www.law.go.kr/법령/주택법",
 ]
 ```
 
 Example output
 
 ```
-[OK]  https://www.law.go.kr/...헌법  →  132 item(s)
+[OK]  https://www.law.go.kr/...소방기본법  →  132 item(s)
 ```
 
 The notebook writes a **newline‑delimited JSON (`*.jsonl`)** file containing:
 
 ```json
-{"doc_id":123, "semantic_id":"헌법 제1장 제1조", "chapter_body":"..."}
+{"doc_id":0, "semantic_id":"소방기본법 제1장 1조", "chapter_body":"..."}
 ```
 
 ---
