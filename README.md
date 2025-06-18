@@ -169,8 +169,8 @@ python eval.py \
 | ----------- | ----------------------------------------------------------  |
 | `bert`      | `beomi/kcbert-base` on faithfulness & similarity |
 | `rouge`     | Rouge‑1/2/L/Lsum (stemming)                        |
-| `llm`       | GPT‑4o discrete pass/fail (0 or 1) |
-| `winrate`   | GPT‑4o pairwise A/B comparison                   |
+| `llm`       | LLM discrete pass/fail (0 or 1) |
+| `winrate`   | LLM pairwise A/B comparison                   |
 
 The script appends metric columns to each row, writes a new JSONL, and prints corpus‑level means:
 
