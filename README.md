@@ -72,7 +72,7 @@ The notebook writes a **newline‑delimited JSON (`*.jsonl`)** file containing:
 
 ### 2. Evaluate retrievers (`retrieval_eval.py`)
 
-Benchmark TF‑IDF, BM25, BGE‑m3 (or any supported by SentenceTransformer in HuggingFace), DPR (or any subset) on a *docs* / *queries* pair.
+Benchmark TF‑IDF, BM25, BGE‑m3 (or any dense retreivers supported by SentenceTransformer in HuggingFace), DPR (or any subset) on a *docs* / *queries* pair.
 
 ```bash
 python retrieval_eval.py \
