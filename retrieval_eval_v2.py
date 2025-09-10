@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 import faiss
-import torch                        
+import torch        
+import math, statistics
 
 @dataclass
 class ModelSpec:
@@ -76,26 +77,36 @@ def load_queries(path: str) -> Tuple[List[str], List[List[int]]]:
                 rel_lists.append(j["matched_doc_id"])
     return qs, rel_lists
 
-def load_multihop_queries(path: str) -> Tuple[List[str], List[List[str]]]:
+def load_multihop_queries(path: str) -> Tuple[List[str], List[List[int]]]:
     items = []
     with open(path, 'r', encoding='utf-8') as f:
         for line in f:
             ex = json.loads(line)
             if ex.get("QA_Appropriateness") == "O":
                 items.append(ex)
-    qrels = {}
-    questions = []
-    for qid, ex in enumerate(items):
-        rel = set()
-        if ex.get("doc_id_from") is not None:
-            rel.add(int(ex["doc_id_from"]))
-        if ex.get("doc_id_to") is not None:
-            rel.add(int(ex["doc_id_to"]))
-        # 비어있지 않은 케이스만 채택
+
+    questions: List[str] = []
+    qrels_list: List[List[int]] = []
+
+    for ex in items:
+        q = ex.get("question")
+        if not isinstance(q, str):
+            continue
+        q = q.strip()
+        if not q:
+            continue
+
+        rel: List[int] = []
+        for k in ("doc_id_from", "doc_id_to"):
+            v = ex.get(k)
+            if isinstance(v, int):
+                rel.append(v)
+
         if rel:
-            qrels[qid] = rel
-            questions.append(ex["question"])
-    return questions, qrels
+            questions.append(q)
+            qrels_list.append(rel)
+
+    return questions, qrels_list
 
 def build_tfidf(docs: List[str], max_feats: int):
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -183,27 +194,99 @@ def expand_with_links(
                 seen.add(linked)
     return expanded
 
+# def evaluate(
+#     run: Dict[int, List[int]],
+#     qrels: List[List[int]],
+#     ks=(1, 2, 3, 5, 10, 20, 100),
+# ) -> Dict[str, float]:
+#     recalls = {k: [] for k in ks}
+#     rr = []
+
+#     for qid, rel in enumerate(qrels):
+#         rel_set = set(rel)
+#         retrieved = run[qid]
+
+#         rank = next((i + 1 for i, d in enumerate(retrieved) if d in rel_set), None)
+#         rr.append(0 if rank is None else 1 / rank)
+
+#         for k in ks:
+#             hit = len([d for d in retrieved[:k] if d in rel_set])
+#             recalls[k].append(hit / len(rel_set))
+
+#     metrics = {f"R@{k}": statistics.mean(recalls[k]) for k in ks}
+#     metrics["MRR"] = statistics.mean(rr)
+#     return metrics
+
 def evaluate(
     run: Dict[int, List[int]],
     qrels: List[List[int]],
-    ks=(1, 2, 3, 5, 10, 20, 100),
 ) -> Dict[str, float]:
-    recalls = {k: [] for k in ks}
-    rr = []
+    """
+    Metrics:
+      - R@K for K in {1, 10, 50, 100}  (fractional recall: hit/len(rel_set))
+      - Both@K for K in {1, 10, 50, 100} (1 if all relevant docs appear within top-K, else 0)
+      - MRR (first relevant rank reciprocal)
+      - nDCG@K for K in {10, 20} (binary gain)
+    """
+    recall_ks = (1, 10, 50, 100)
+    both_ks   = (1, 10, 50, 100)
+    ndcg_ks   = (10, 20)
+
+    # collectors
+    recalls = {k: [] for k in recall_ks}
+    boths   = {k: [] for k in both_ks}
+    ndcgs   = {k: [] for k in ndcg_ks}
+    rr_list = []
 
     for qid, rel in enumerate(qrels):
         rel_set = set(rel)
-        retrieved = run[qid]
+        if not rel_set:
+            continue
 
-        rank = next((i + 1 for i, d in enumerate(retrieved) if d in rel_set), None)
-        rr.append(0 if rank is None else 1 / rank)
+        ranked = run.get(qid, []) or []
 
-        for k in ks:
-            hit = len([d for d in retrieved[:k] if d in rel_set])
-            recalls[k].append(hit / len(rel_set))
+        # MRR
+        first_rank = None
+        for i, d in enumerate(ranked):
+            if d in rel_set:
+                first_rank = i + 1
+                break
+        rr_list.append(0.0 if first_rank is None else 1.0 / first_rank)
 
-    metrics = {f"R@{k}": statistics.mean(recalls[k]) for k in ks}
-    metrics["MRR"] = statistics.mean(rr)
+        # Recall@K / Both@K
+        for k in recall_ks:
+            topk = ranked[:k]
+            hit_cnt = sum(1 for d in topk if d in rel_set)
+            # fractional recall (히트 수 / 정답 수)
+            recalls[k].append(hit_cnt / len(rel_set))
+        for k in both_ks:
+            topk = ranked[:k]
+            both_hit = 1.0 if rel_set.issubset(set(topk)) else 0.0
+            boths[k].append(both_hit)
+
+        # nDCG@K (binary gain)
+        for k in ndcg_ks:
+            topk = ranked[:k]
+            hits = [1 if d in rel_set else 0 for d in topk]
+            # DCG = sum(h_i / log2(i+2))
+            dcg = sum(h / math.log2(i + 2) for i, h in enumerate(hits))
+            # IDCG: 상위 k에 올 수 있는 최대 관련문서 수
+            R = min(len(rel_set), k)
+            idcg = sum(1.0 / math.log2(i + 2) for i in range(R)) if R > 0 else 1.0
+            ndcgs[k].append(0.0 if idcg == 0 else dcg / idcg)
+
+    def mean_or_zero(xs):
+        return statistics.mean(xs) if xs else 0.0
+
+    metrics = {}
+    for k in recall_ks:
+        metrics[f"R@{k}"] = mean_or_zero(recalls[k])
+    for k in both_ks:
+        metrics[f"Both@{k}"] = mean_or_zero(boths[k])
+    for k in ndcg_ks:
+        metrics[f"nDCG@{k}"] = mean_or_zero(ndcgs[k])
+    metrics["MRR"] = mean_or_zero(rr_list)
+
     return metrics
 
 def run_one_model(
