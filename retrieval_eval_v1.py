@@ -66,13 +66,14 @@ def load_docs(path: str) -> Tuple[List[int], List[str], Dict[int, List[int]]]:
 
     return doc_ids, texts, link_dict
 
-def load_queries(path: str) -> Tuple[List[str], List[List[int]]]:
+def load_queries(path: str, field: str = "question") -> Tuple[List[str], List[List[int]]]:
     qs, rel_lists = [], []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             j = orjson.loads(line)
-            if j.get("has_matched_docs"):
-                qs.append(j["question"])
+            q = j.get(field)
+            if j.get("has_matched_docs") and isinstance(q, str) and q.strip():
+                qs.append(q.strip())
                 rel_lists.append(j["matched_doc_id"])
     return qs, rel_lists
 
@@ -237,12 +238,19 @@ def main() -> None:
     p.add_argument("--qwen_model_name", default="Qwen/Qwen3-Embedding-0.6B")
     p.add_argument("--snow_model_name", default="Snowflake/snowflake-arctic-embed-l-v2.0")
     p.add_argument("--kure_model_name", default="nlpai-lab/KURE-v1")
+    p.add_argument("--hop", choices=["single", "multi"], default="multi", help="Use single-hop loader (load_queries) or multi-hop loader (load_multihop_queries).")
+    p.add_argument("--query_field", choices=["question", "rewrite_exploratory"], default="question", help="When --hop single, which JSON key to read as the query.")
 
     args = p.parse_args()
 
     doc_ids, doc_texts, link_dict = load_docs(args.docs)
-    queries, rel_lists = load_queries(args.queries)
-    print(f"Loaded {len(doc_ids)} documents, and {len(queries)} queries.")
+    
+    if args.hop == "single":
+        queries, rel_lists = load_queries(args.queries, field=args.query_field)
+        print(f"Loaded {len(doc_ids)} documents, and {len(queries)} SINGLE-HOP queries (field='{args.query_field}').")
+    else:
+        queries, rel_lists = load_multihop_queries(args.queries)
+        print(f"Loaded {len(doc_ids)} documents, and {len(queries)} MULTI-HOP queries.")
   
     id2idx = {d: i for i, d in enumerate(doc_ids)}
 

@@ -3,7 +3,7 @@ import argparse, orjson, json, os, statistics, itertools
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Iterable
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
@@ -21,27 +21,27 @@ specs: List[ModelSpec] = [
     ModelSpec(
         key="bge",
         arg_model_name_attr="bge_model_name",
-        results_key="bge-m3",
+        results_key="bge",
     ),
     ModelSpec(
         key="nomic",
         arg_model_name_attr="nomic_model_name",
-        results_key="nomic-embed-v2",
+        results_key="nomic",
     ),
     ModelSpec(
         key="qwen",
         arg_model_name_attr="qwen_model_name",
-        results_key="qwen3-embedding-0.6B",
+        results_key="qwen",
     ),
     ModelSpec(
         key="snow",
         arg_model_name_attr="snow_model_name",
-        results_key="snowflake-arctic-embed-v2"
+        results_key="snow"
     ),
     ModelSpec(
         key="kure",
         arg_model_name_attr="kure_model_name",
-        results_key="kure-v1"
+        results_key="kure"
     )
 ]
 
@@ -194,6 +194,43 @@ def expand_with_links(
                 seen.add(linked)
     return expanded
 
+def _rank_map(run_for_one_query: List[int]) -> Dict[int, int]:
+    return {doc_id: r for r, doc_id in enumerate(run_for_one_query, start=1)}
+
+def rrf_fuse(
+    runs: Iterable[Dict[int, List[int]]],
+    k: int = 60,
+    topk: int = 100,
+) -> Dict[int, List[int]]:
+    fused: Dict[int, List[int]] = {}
+    runs = list(runs)
+
+    all_qids = set().union(*[r.keys() for r in runs])
+
+    for qid in all_qids:
+        candidates: set[int] = set()
+        rankers_rankmap: List[Dict[int, int]] = []
+        for r in runs:
+            ranked = r.get(qid, []) or []
+            rankers_rankmap.append(_rank_map(ranked))
+            candidates.update(ranked)
+
+        scores: Dict[int, float] = defaultdict(float)
+        for doc_id in candidates:
+            s = 0.0
+            for rankmap in rankers_rankmap:
+                if doc_id in rankmap:
+                    s += 1.0 / (k + rankmap[doc_id])
+            scores[doc_id] = s
+
+        ranked = sorted(
+            scores.items(),
+            key=lambda kv: (-kv[1], kv[0])
+        )
+        fused[qid] = [doc_id for doc_id, _ in ranked[:topk]]
+
+    return fused
+
 # def evaluate(
 #     run: Dict[int, List[int]],
 #     qrels: List[List[int]],
@@ -221,28 +258,21 @@ def evaluate(
     run: Dict[int, List[int]],
     qrels: List[List[int]],
 ) -> Dict[str, float]:
-    """
-    Metrics:
-      - R@K for K in {1, 10, 50, 100}  (fractional recall: hit/len(rel_set))
-      - Both@K for K in {1, 10, 50, 100} (1 if all relevant docs appear within top-K, else 0)
-      - MRR (first relevant rank reciprocal)
-      - nDCG@K for K in {10, 20} (binary gain)
-    """
+    import math, statistics
+
+    hit_ks    = (1, 10, 50, 100)
     recall_ks = (1, 10, 50, 100)
-    both_ks   = (1, 10, 50, 100)
     ndcg_ks   = (10, 20)
 
-    # collectors
-    recalls = {k: [] for k in recall_ks}
-    boths   = {k: [] for k in both_ks}
-    ndcgs   = {k: [] for k in ndcg_ks}
-    rr_list = []
+    hit_fracs   = {k: [] for k in hit_ks}      # fractional recall (hit/|Rel|)
+    recall_flags= {k: [] for k in recall_ks}   # 1 if all relevant in top-K else 0
+    ndcgs       = {k: [] for k in ndcg_ks}
+    rr_list     = []
 
     for qid, rel in enumerate(qrels):
         rel_set = set(rel)
         if not rel_set:
             continue
-
         ranked = run.get(qid, []) or []
 
         # MRR
@@ -253,40 +283,35 @@ def evaluate(
                 break
         rr_list.append(0.0 if first_rank is None else 1.0 / first_rank)
 
-        # Recall@K / Both@K
-        for k in recall_ks:
+        # Hit@K (fractional) & Recall@K (all-hit flag)
+        for k in hit_ks:
             topk = ranked[:k]
             hit_cnt = sum(1 for d in topk if d in rel_set)
-            # fractional recall (히트 수 / 정답 수)
-            recalls[k].append(hit_cnt / len(rel_set))
-        for k in both_ks:
-            topk = ranked[:k]
-            both_hit = 1.0 if rel_set.issubset(set(topk)) else 0.0
-            boths[k].append(both_hit)
+            hit_fracs[k].append(hit_cnt / len(rel_set))
 
-        # nDCG@K (binary gain)
+        for k in recall_ks:
+            topk = ranked[:k]
+            recall_flags[k].append(1.0 if rel_set.issubset(set(topk)) else 0.0)
+
+        # nDCG@K (binary gains)
         for k in ndcg_ks:
             topk = ranked[:k]
-            hits = [1 if d in rel_set else 0 for d in topk]
-            # DCG = sum(h_i / log2(i+2))
-            dcg = sum(h / math.log2(i + 2) for i, h in enumerate(hits))
-            # IDCG: 상위 k에 올 수 있는 최대 관련문서 수
+            gains = [1.0 if d in rel_set else 0.0 for d in topk]
+            dcg = sum(g / math.log2(i + 2) for i, g in enumerate(gains))
             R = min(len(rel_set), k)
             idcg = sum(1.0 / math.log2(i + 2) for i in range(R)) if R > 0 else 1.0
             ndcgs[k].append(0.0 if idcg == 0 else dcg / idcg)
 
-    def mean_or_zero(xs):
-        return statistics.mean(xs) if xs else 0.0
+    mean = lambda xs: statistics.mean(xs) if xs else 0.0
 
     metrics = {}
+    for k in hit_ks:
+        metrics[f"Hit@{k}"] = mean(hit_fracs[k])
     for k in recall_ks:
-        metrics[f"R@{k}"] = mean_or_zero(recalls[k])
-    for k in both_ks:
-        metrics[f"Both@{k}"] = mean_or_zero(boths[k])
+        metrics[f"Recall@{k}"] = mean(recall_flags[k])
     for k in ndcg_ks:
-        metrics[f"nDCG@{k}"] = mean_or_zero(ndcgs[k])
-    metrics["MRR"] = mean_or_zero(rr_list)
-
+        metrics[f"nDCG@{k}"] = mean(ndcgs[k])
+    metrics["MRR"] = mean(rr_list)
     return metrics
 
 def run_one_model(
@@ -299,6 +324,7 @@ def run_one_model(
     rel_lists: Dict[int, List[str]],
     results: Dict[str, Dict],
     rows: List[Dict],
+    runs_by_method: Dict[str, Dict[int, List[int]]] 
 ):
     model_name = getattr(args, spec.arg_model_name_attr)
     print(f"\n🟢 {model_name} Embedding")
@@ -317,11 +343,15 @@ def run_one_model(
         if args.expand_links:
             retrieved = expand_with_links(retrieved, link_dict, args.topk)
         run[qid] = retrieved
-
-    metrics = evaluate(run, rel_lists)
-    results[spec.results_key] = metrics
-    rows.append(metrics)
-    print(f"{spec.results_key}:", json.dumps(metrics, ensure_ascii=False, indent=2))
+    runs_by_method[spec.key] = run 
+    
+    if not args.only_hybrid:
+        metrics = evaluate(run, rel_lists)
+        results[spec.results_key] = metrics
+        rows.append(metrics)
+        print(f"{spec.results_key}:", json.dumps(metrics, ensure_ascii=False, indent=2))
+    else:
+        print(f"{spec.results_key} run built (metrics suppressed: --only_hybrid)")
 
 def main() -> None:
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -330,7 +360,7 @@ def main() -> None:
     p.add_argument("--topk",        type=int, default=100)
     p.add_argument("--batch_size",  type=int, default=256)
     p.add_argument("--device",      default="cuda:0")
-    p.add_argument("--methods", default="tfidf,bm25,bge,nomic,qwen,snow")
+    p.add_argument("--methods", default="bm25,bge,nomic,qwen,snow")
     p.add_argument("--expand_links", action="store_true")
     p.add_argument("--tfidf_max_features", type=int, default=120_000)
     p.add_argument("--bm25_k1", type=float, default=1.5)
@@ -340,6 +370,8 @@ def main() -> None:
     p.add_argument("--qwen_model_name", default="Qwen/Qwen3-Embedding-0.6B")
     p.add_argument("--snow_model_name", default="Snowflake/snowflake-arctic-embed-l-v2.0")
     p.add_argument("--kure_model_name", default="nlpai-lab/KURE-v1")
+    p.add_argument("--rrf_k", type=int, default=60, help="RRF smoothing constant k (default: 60)")
+    p.add_argument("--only_hybrid", action="store_true", help="Report only hybrid (RRF) results; still builds base runs.")
 
     args = p.parse_args()
 
@@ -348,7 +380,7 @@ def main() -> None:
     print(f"Loaded {len(doc_ids)} documents, and {len(queries)} queries.")
 
     results, rows = {}, []
-
+    runs_by_method: Dict[str, Dict[int, List[int]]] = {}
     wanted = [m.strip().lower() for m in args.methods.split(",")]
 
     if "tfidf" in wanted:
@@ -361,10 +393,15 @@ def main() -> None:
             if args.expand_links:
                 retrieved = expand_with_links(retrieved, link_dict, args.topk)
             tf_run[qid] = retrieved
-        metrics = evaluate(tf_run, rel_lists)
-        results["TF‑IDF"] = metrics
-        rows.append(metrics)
-        print("TF‑IDF:", json.dumps(metrics, ensure_ascii=False, indent=2))
+        runs_by_method["tfidf"] = tf_run
+        
+        if not args.only_hybrid:
+            metrics = evaluate(tf_run, rel_lists)
+            results["TF-IDF"] = metrics
+            rows.append(metrics)
+            print("TF-IDF:", json.dumps(metrics, ensure_ascii=False, indent=2))
+        else:
+            print("TF-IDF run built (metrics suppressed: --only_hybrid)")
 
     if "bm25" in wanted:
         print("\n🟢 BM25 Indexing (k1={:.2f}, b={:.2f})".format(args.bm25_k1, args.bm25_b))
@@ -376,16 +413,39 @@ def main() -> None:
             if args.expand_links:
                 retrieved = expand_with_links(retrieved, link_dict, args.topk)
             bm_run[qid] = retrieved
-        metrics = evaluate(bm_run, rel_lists)
-        results["BM25"] = metrics
-        rows.append(metrics)
-        print("BM25:", json.dumps(metrics, ensure_ascii=False, indent=2))
+        runs_by_method["bm25"] = bm_run
+
+        if not args.only_hybrid:
+            metrics = evaluate(bm_run, rel_lists)
+            results["BM25"] = metrics
+            rows.append(metrics)
+            print("BM25:", json.dumps(metrics, ensure_ascii=False, indent=2))
+        else:
+            print("BM25 run built (metrics suppressed: --only_hybrid)")
 
     for spec in specs:
         if spec.key in wanted:
             run_one_model(
-                spec, args, doc_texts, doc_ids, queries, link_dict, rel_lists, results, rows
+                spec, args, doc_texts, doc_ids, queries, link_dict, rel_lists, results, rows, runs_by_method
             )      
+            
+    if "bm25" in runs_by_method:
+        bm_run = runs_by_method["bm25"]
+
+        dense_keys = [k for k in runs_by_method.keys() if k not in ("bm25", "tfidf")]
+        if not dense_keys:
+            print("No dense runs found to hybridize with BM25.")
+        for dk in dense_keys:
+            hyb_key = f"BM25 + {dk}, k={args.rrf_k}"
+            print(f"\n🟣 {hyb_key}")
+            hyb_run = rrf_fuse([bm_run, runs_by_method[dk]], k=args.rrf_k, topk=args.topk)
+
+            metrics = evaluate(hyb_run, rel_lists)
+            results[hyb_key] = metrics
+            rows.append(metrics)
+            print(f"{hyb_key}:", json.dumps(metrics, ensure_ascii=False, indent=2))
+    else:
+        print("⚠️ BM25 run not built; cannot form RRF hybrids. Include 'bm25' in --methods.")
 
     df = pd.DataFrame(rows, index=list(results))
     print("\n=== Final Results ===")
