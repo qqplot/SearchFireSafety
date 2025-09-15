@@ -24,11 +24,6 @@ specs: List[ModelSpec] = [
         results_key="bge",
     ),
     ModelSpec(
-        key="nomic",
-        arg_model_name_attr="nomic_model_name",
-        results_key="nomic",
-    ),
-    ModelSpec(
         key="qwen",
         arg_model_name_attr="qwen_model_name",
         results_key="qwen",
@@ -37,6 +32,11 @@ specs: List[ModelSpec] = [
         key="snow",
         arg_model_name_attr="snow_model_name",
         results_key="snow"
+    ),
+    ModelSpec(
+        key="nomic",
+        arg_model_name_attr="nomic_model_name",
+        results_key="nomic",
     ),
     ModelSpec(
         key="kure",
@@ -67,13 +67,14 @@ def load_docs(path: str) -> Tuple[List[int], List[str], Dict[int, List[int]]]:
 
     return doc_ids, texts, link_dict
 
-def load_queries(path: str) -> Tuple[List[str], List[List[int]]]:
+def load_queries(path: str, field: str = "question") -> Tuple[List[str], List[List[int]]]:
     qs, rel_lists = [], []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             j = orjson.loads(line)
-            if j.get("has_matched_docs"):
-                qs.append(j["question"])
+            q = j.get(field)
+            if j.get("has_matched_docs") and isinstance(q, str) and q.strip():
+                qs.append(q.strip())
                 rel_lists.append(j["matched_doc_id"])
     return qs, rel_lists
 
@@ -194,65 +195,64 @@ def expand_with_links(
                 seen.add(linked)
     return expanded
 
-def _rank_map(run_for_one_query: List[int]) -> Dict[int, int]:
-    return {doc_id: r for r, doc_id in enumerate(run_for_one_query, start=1)}
-
 def rrf_fuse(
     runs: Iterable[Dict[int, List[int]]],
     k: int = 60,
     topk: int = 100,
+    weights: Iterable[float] | None = None,   # optional weights per run
 ) -> Dict[int, List[int]]:
+    """
+    Reciprocal Rank Fusion (RRF) with customizable weights.
+
+    Args:
+        runs:    List of runs, each is a dict: query_id -> ranked list of doc_ids
+        k:       RRF smoothing constant (default: 60)
+        topk:    Number of documents to return per query
+        weights: Optional weights aligned with `runs`. If None, all 1.0.
+
+    Returns:
+        fused: Dict mapping query_id -> fused ranked list of doc_ids
+    """
     fused: Dict[int, List[int]] = {}
     runs = list(runs)
 
+    # Normalize weights: default to 1.0 if not provided; pad/truncate to match runs
+    if weights is None:
+        weights = [1.0] * len(runs)
+    else:
+        w_list = list(weights)
+        if len(w_list) < len(runs):
+            w_list += [1.0] * (len(runs) - len(w_list))
+        weights = w_list[:len(runs)]
+
+    # Collect all query IDs
     all_qids = set().union(*[r.keys() for r in runs])
 
     for qid in all_qids:
         candidates: set[int] = set()
-        rankers_rankmap: List[Dict[int, int]] = []
-        for r in runs:
+        per_ranker_maps: List[Tuple[Dict[int, int], float]] = []
+
+        # Build rank maps for this query
+        for r, w in zip(runs, weights):
             ranked = r.get(qid, []) or []
-            rankers_rankmap.append(_rank_map(ranked))
+            rankmap = {doc_id: rank for rank, doc_id in enumerate(ranked, start=1)}
+            per_ranker_maps.append((rankmap, w))
             candidates.update(ranked)
 
         scores: Dict[int, float] = defaultdict(float)
+
+        # Weighted RRF: weight / (k + rank)
         for doc_id in candidates:
             s = 0.0
-            for rankmap in rankers_rankmap:
+            for rankmap, w in per_ranker_maps:
                 if doc_id in rankmap:
-                    s += 1.0 / (k + rankmap[doc_id])
+                    s += w / (k + rankmap[doc_id])
             scores[doc_id] = s
 
-        ranked = sorted(
-            scores.items(),
-            key=lambda kv: (-kv[1], kv[0])
-        )
+        ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
         fused[qid] = [doc_id for doc_id, _ in ranked[:topk]]
 
     return fused
-
-# def evaluate(
-#     run: Dict[int, List[int]],
-#     qrels: List[List[int]],
-#     ks=(1, 2, 3, 5, 10, 20, 100),
-# ) -> Dict[str, float]:
-#     recalls = {k: [] for k in ks}
-#     rr = []
-
-#     for qid, rel in enumerate(qrels):
-#         rel_set = set(rel)
-#         retrieved = run[qid]
-
-#         rank = next((i + 1 for i, d in enumerate(retrieved) if d in rel_set), None)
-#         rr.append(0 if rank is None else 1 / rank)
-
-#         for k in ks:
-#             hit = len([d for d in retrieved[:k] if d in rel_set])
-#             recalls[k].append(hit / len(rel_set))
-
-#     metrics = {f"R@{k}": statistics.mean(recalls[k]) for k in ks}
-#     metrics["MRR"] = statistics.mean(rr)
-#     return metrics
 
 def evaluate(
     run: Dict[int, List[int]],
@@ -355,29 +355,38 @@ def run_one_model(
 
 def main() -> None:
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    
     p.add_argument("--docs",        required=True)
     p.add_argument("--queries",     required=True)
     p.add_argument("--topk",        type=int, default=100)
     p.add_argument("--batch_size",  type=int, default=256)
     p.add_argument("--device",      default="cuda:0")
-    p.add_argument("--methods", default="bm25,bge,nomic,qwen,snow")
+    p.add_argument("--methods", default="tfidf,bm25,bge,qwen,snow")
     p.add_argument("--expand_links", action="store_true")
     p.add_argument("--tfidf_max_features", type=int, default=120_000)
     p.add_argument("--bm25_k1", type=float, default=1.5)
     p.add_argument("--bm25_b",  type=float, default=0.75)
     p.add_argument("--bge_model_name", default="BAAI/bge-m3")
-    p.add_argument("--nomic_model_name", default="nomic-ai/nomic-embed-text-v2-moe")
     p.add_argument("--qwen_model_name", default="Qwen/Qwen3-Embedding-0.6B")
     p.add_argument("--snow_model_name", default="Snowflake/snowflake-arctic-embed-l-v2.0")
+    p.add_argument("--nomic_model_name", default="nomic-ai/nomic-embed-text-v2-moe")
     p.add_argument("--kure_model_name", default="nlpai-lab/KURE-v1")
     p.add_argument("--rrf_k", type=int, default=60, help="RRF smoothing constant k (default: 60)")
     p.add_argument("--only_hybrid", action="store_true", help="Report only hybrid (RRF) results; still builds base runs.")
-
+    p.add_argument("--hop", choices=["single", "multi"], default="multi", help="Use single-hop loader (load_queries) or multi-hop loader (load_multihop_queries).")
+    p.add_argument("--query_field", choices=["question", "rewrite_exploratory", "rewrite_keyword", "rewrite_hybrid"], default="question", help="When --hop single, which JSON key to read as the query.")
+    p.add_argument("--rrf_bm25_weight", type=float, default=1.0, help="RRF weight for BM25 (default: 1.0)")
+    p.add_argument("--rrf_dense_weight", type=float, default=9.0, help="RRF weight for dense embeddings (default: 9.0)")
+    
     args = p.parse_args()
 
     doc_ids, doc_texts, link_dict = load_docs(args.docs)
-    queries, rel_lists = load_multihop_queries(args.queries)
-    print(f"Loaded {len(doc_ids)} documents, and {len(queries)} queries.")
+    if args.hop == "single":
+        queries, rel_lists = load_queries(args.queries, field=args.query_field)
+        print(f"Loaded {len(doc_ids)} documents, and {len(queries)} SINGLE-HOP queries (field='{args.query_field}').")
+    else:
+        queries, rel_lists = load_multihop_queries(args.queries)
+        print(f"Loaded {len(doc_ids)} documents, and {len(queries)} MULTI-HOP queries.")
 
     results, rows = {}, []
     runs_by_method: Dict[str, Dict[int, List[int]]] = {}
@@ -438,7 +447,7 @@ def main() -> None:
         for dk in dense_keys:
             hyb_key = f"BM25 + {dk}, k={args.rrf_k}"
             print(f"\n🟣 {hyb_key}")
-            hyb_run = rrf_fuse([bm_run, runs_by_method[dk]], k=args.rrf_k, topk=args.topk)
+            hyb_run = rrf_fuse([bm_run, runs_by_method[dk]], k=args.rrf_k, topk=args.topk, weights=[args.rrf_bm25_weight, args.rrf_dense_weight])
 
             metrics = evaluate(hyb_run, rel_lists)
             results[hyb_key] = metrics
