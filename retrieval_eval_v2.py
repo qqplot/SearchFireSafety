@@ -257,15 +257,14 @@ def rrf_fuse(
 def evaluate(
     run: Dict[int, List[int]],
     qrels: List[List[int]],
+    recall_ks=(10, 100),
+    s_recall_ks=(10, 100),
+    ndcg_ks=(10, 20),
 ) -> Dict[str, float]:
     import math, statistics
 
-    hit_ks    = (1, 10, 50, 100)
-    recall_ks = (1, 10, 50, 100)
-    ndcg_ks   = (10, 20)
-
-    hit_fracs   = {k: [] for k in hit_ks}      # fractional recall (hit/|Rel|)
-    recall_flags= {k: [] for k in recall_ks}   # 1 if all relevant in top-K else 0
+    recall_fracs   = {k: [] for k in recall_ks}      # fractional recall (hit/|Rel|)
+    s_recall_flags= {k: [] for k in s_recall_ks}   # 1 if all relevant in top-K else 0
     ndcgs       = {k: [] for k in ndcg_ks}
     rr_list     = []
 
@@ -283,15 +282,15 @@ def evaluate(
                 break
         rr_list.append(0.0 if first_rank is None else 1.0 / first_rank)
 
-        # Hit@K (fractional) & Recall@K (all-hit flag)
-        for k in hit_ks:
-            topk = ranked[:k]
-            hit_cnt = sum(1 for d in topk if d in rel_set)
-            hit_fracs[k].append(hit_cnt / len(rel_set))
-
+        # Recall@K (fractional) & Strict Recall@K (all-hit flag)
         for k in recall_ks:
             topk = ranked[:k]
-            recall_flags[k].append(1.0 if rel_set.issubset(set(topk)) else 0.0)
+            recall_cnt = sum(1 for d in topk if d in rel_set)
+            recall_fracs[k].append(recall_cnt / len(rel_set))
+
+        for k in s_recall_ks:
+            topk = ranked[:k]
+            s_recall_flags[k].append(1.0 if rel_set.issubset(set(topk)) else 0.0)
 
         # nDCG@K (binary gains)
         for k in ndcg_ks:
@@ -305,10 +304,10 @@ def evaluate(
     mean = lambda xs: statistics.mean(xs) if xs else 0.0
 
     metrics = {}
-    for k in hit_ks:
-        metrics[f"Hit@{k}"] = mean(hit_fracs[k])
     for k in recall_ks:
-        metrics[f"Recall@{k}"] = mean(recall_flags[k])
+        metrics[f"Recall@{k}"] = mean(recall_fracs[k])
+    for k in s_recall_ks:
+        metrics[f"Strict Recall@{k}"] = mean(s_recall_flags[k])
     for k in ndcg_ks:
         metrics[f"nDCG@{k}"] = mean(ndcgs[k])
     metrics["MRR"] = mean(rr_list)
@@ -324,7 +323,10 @@ def run_one_model(
     rel_lists: Dict[int, List[str]],
     results: Dict[str, Dict],
     rows: List[Dict],
-    runs_by_method: Dict[str, Dict[int, List[int]]] 
+    runs_by_method: Dict[str, Dict[int, List[int]]],
+    recall_ks: List[int],
+    s_recall_ks: List[int],
+    ndcg_ks: List[int],
 ):
     model_name = getattr(args, spec.arg_model_name_attr)
     print(f"\n🟢 {model_name} Embedding")
@@ -346,7 +348,7 @@ def run_one_model(
     runs_by_method[spec.key] = run 
     
     if not args.only_hybrid:
-        metrics = evaluate(run, rel_lists)
+        metrics = evaluate(run, rel_lists, recall_ks, s_recall_ks, ndcg_ks)
         results[spec.results_key] = metrics
         rows.append(metrics)
         print(f"{spec.results_key}:", json.dumps(metrics, ensure_ascii=False, indent=2))
@@ -377,6 +379,9 @@ def main() -> None:
     p.add_argument("--query_field", choices=["question", "rewrite_exploratory", "rewrite_keyword", "rewrite_hybrid"], default="question", help="When --hop single, which JSON key to read as the query.")
     p.add_argument("--rrf_bm25_weight", type=float, default=1.0, help="RRF weight for BM25 (default: 1.0)")
     p.add_argument("--rrf_dense_weight", type=float, default=9.0, help="RRF weight for dense embeddings (default: 9.0)")
+    p.add_argument("--recall_ks", type=str, default="10,100", help="Comma-separated list of K values for Recall@K (default: 10,100)")
+    p.add_argument("--strict_recall_ks", type=str, default="10,100", help="Comma-separated list of K values for Strict Recall@K (default: 10,100)")
+    p.add_argument("--ndcg_ks", type=str, default="10,20", help="Comma-separated list of K values for nDCG@K (default: 10,20)")
     
     args = p.parse_args()
 
@@ -392,6 +397,10 @@ def main() -> None:
     runs_by_method: Dict[str, Dict[int, List[int]]] = {}
     wanted = [m.strip().lower() for m in args.methods.split(",")]
 
+    recall_ks = [int(x) for x in args.recall_ks.split(",")]
+    s_recall_ks = [int(x) for x in args.strict_recall_ks.split(",")]
+    ndcg_ks = [int(x) for x in args.ndcg_ks.split(",")]
+
     if "tfidf" in wanted:
         print("\n🟢 TF‑IDF Indexing")
         tf_vect, tf_mat = build_tfidf(doc_texts, args.tfidf_max_features)
@@ -405,7 +414,7 @@ def main() -> None:
         runs_by_method["tfidf"] = tf_run
         
         if not args.only_hybrid:
-            metrics = evaluate(tf_run, rel_lists)
+            metrics = evaluate(tf_run, rel_lists, recall_ks, s_recall_ks, ndcg_ks)
             results["TF-IDF"] = metrics
             rows.append(metrics)
             print("TF-IDF:", json.dumps(metrics, ensure_ascii=False, indent=2))
@@ -425,7 +434,7 @@ def main() -> None:
         runs_by_method["bm25"] = bm_run
 
         if not args.only_hybrid:
-            metrics = evaluate(bm_run, rel_lists)
+            metrics = evaluate(bm_run, rel_lists, recall_ks, s_recall_ks, ndcg_ks)
             results["BM25"] = metrics
             rows.append(metrics)
             print("BM25:", json.dumps(metrics, ensure_ascii=False, indent=2))
@@ -435,7 +444,7 @@ def main() -> None:
     for spec in specs:
         if spec.key in wanted:
             run_one_model(
-                spec, args, doc_texts, doc_ids, queries, link_dict, rel_lists, results, rows, runs_by_method
+                spec, args, doc_texts, doc_ids, queries, link_dict, rel_lists, results, rows, runs_by_method, recall_ks, s_recall_ks, ndcg_ks
             )      
             
     if "bm25" in runs_by_method:
@@ -449,7 +458,7 @@ def main() -> None:
             print(f"\n🟣 {hyb_key}")
             hyb_run = rrf_fuse([bm_run, runs_by_method[dk]], k=args.rrf_k, topk=args.topk, weights=[args.rrf_bm25_weight, args.rrf_dense_weight])
 
-            metrics = evaluate(hyb_run, rel_lists)
+            metrics = evaluate(hyb_run, rel_lists, recall_ks, s_recall_ks, ndcg_ks)
             results[hyb_key] = metrics
             rows.append(metrics)
             print(f"{hyb_key}:", json.dumps(metrics, ensure_ascii=False, indent=2))
