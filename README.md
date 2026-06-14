@@ -1,180 +1,115 @@
-# SearchFireSafety
+# SearchFireSafety (ACL 2026)
 
-## Introduction
+Official dataset repository for the ACL 2026 paper:
+**Beyond Case Law: Evaluating Structure-Aware Retrieval and Safety in Statute-Centric Legal QA**
 
-Retrieval-augmented generation (RAG) promises to bridge complex legal statutes and public understanding, yet hallucination remains a critical barrier in real-world use. Because statutes evolve and provisions frequently cross-reference, maintaining temporal currency and citation awareness is essential, favoring up-to-date sources over static parametric memory.
-To study these issues, we focus on the under-examined domain of South Korean fire safety regulation—a complex web of fragmented legislation, dense cross-references, and vague decrees. We introduce **SearchFireSafety**, the first RAG-oriented question-answering (QA) resource for this domain. It includes: (i) 941 real-world, open-ended QA pairs from public inquiries (2023–2025); (ii) a corpus of 4,437 legal documents from 117 statutes with a citation graph; and (iii) synthetic single-hop (Yes/No) and multi-hop (MCQA) benchmarks targeting legal reasoning and uncertainty.
+Preprint: https://arxiv.org/abs/2604.06173
 
-Experiments with four retrieval strategies and five Korean-capable LLMs show that: (1) multilingual dense retrievers excel due to the domain's mix of Korean, English loanwords, and Sino-Korean terms (i.e., Chinese characters); (2) grounding LLMs with SearchFireSafety substantially improves factual accuracy; but (3) multi-hop reasoning still fails to resolve conflicting provisions or recognize informational gaps. Our results affirm that RAG is necessary but not yet sufficient for legal QA, and we offer SearchFireSafety as a rigorous testbed to drive progress in Legal AI.
-## Data Format
+## Overview
 
+SearchFireSafety is a benchmark for statute-centric legal QA in the Korean fire-safety domain.
+The dataset is designed to evaluate:
 
-### 1. Question-Answering Dataset (/data/qna.jsonl)
+- Structure-aware retrieval over citation-linked legal documents
+- Multi-hop reasoning across delegated statutory provisions
+- Safe abstention behavior under partial/incomplete context
 
-| Key                |  Example                             | Notes                             |
-| ------------------ |  ----------------------------------- | --------------------------------- |
-| `question_id`      |  `0`                                 | Unique identifier.                |
-| `qna_doc_id`       |  `1AA‑2304‑0225487-…`                | Government archive ID.            |
-| `original_text`    |  Full civil‑petition reply text.     |                                   |
-| `law_references`   |  `["소방시설 … 시행령 별표4", …]`      | Manually extracted citations.     |
-| `question_raw`     | Original citizen question.          |                                   |
-| `question`         |  GPT-4o Cleansed question text.           |                                   |
-| `answer`           | Gold answer by NFA official.    |                                   |
-| `matched_doc_id`   |  `[2, 1259, 1292]`                   | IDs of supporting statute chunks. |
-| `semantic_ids`     |  Machine‑readable statute IDs.       |                                   |
-| `has_matched_docs` |  Whether supporting docs were found. |                                   |
+## Repository Scope
 
+This repository is organized as a **dataset archive**.
+The core release is under `data/`:
 
-### 2. Legal Documents (/data/doc.jsonl)
-| Key                                              | Example                              | Explanation                          |
-| ------------------------------------------------ | ------------------------------------ | ------------------------------------ |
-| `doc_id`                                         | `0`                                  | Sequential integer.                  |
-| `semantic_id`                                    | `NFPC‑101_1조`                        | Law‑code + article slug.             |
-| `collection_name`                                | `소방시설 설치 및 관리에 관한 법률`                | Parent statute.                      |
-| `law_level`                                      | `행정규칙`                               | Law level (법률 / 시행령 / 행정규칙 etc.)                     |
-| `law_name`                                       | Full statute title.                  |                                      |
-| `chapter`, `chapter_description`, `chapter_body` | Text content.                        |                                      |
-| `deleted`                                        | `false`                              | `true` if the provision is repealed. |
-| `related_chapters`                               | Cross‑links to related statutes. |                                      |
-| `matched_doc_id_merged`                          | [1291, 1292]               |   IDs of related document ids                                   |
+- `data/legal_docs.jsonl`: legal corpus (article-level units) + citation links
+- `data/realworld_qa.jsonl`: real-world expert QA pairs
+- `data/multihop_qa_mcq.jsonl`: synthetic multi-hop MCQ for safety evaluation
 
-## Evaluation Prompts
+## Dataset Statistics
 
-## Tutorial
----
+Current file-level counts:
 
-### 1. Crawl Korean legislation (`Crawl_Law.ipynb`)
+- `legal_docs.jsonl`: 4,468
+- `realworld_qa.jsonl`: 876
+- `multihop_qa_mcq.jsonl`: 3,395
 
-Open the notebook and replace `url_list` with **법령 페이지** from [https://www.law.go.kr/LSW/main.html](https://www.law.go.kr/LSW/main.html).
-Run all cells—each URL is downloaded, parsed chapter‑by‑chapter, and the result is printed:
+Additional summary statistics:
 
-```python
-url_list = [
-    "https://www.law.go.kr/법령/소방기본법",
-    "https://www.law.go.kr/법령/주택법",
-]
+- Legal docs avg text length: 477.9 characters
+- Real-world QA avg question length: 90.7 characters
+- Real-world QA avg answer length: 278.1 characters
+- Multi-hop MCQ avg question length: 51.1 characters
+
+Note: Table 1 in the paper reports 4,467 legal documents. The current release file contains 4,468 rows.
+
+## File Formats
+
+### 1) `legal_docs.jsonl`
+
+Article-level legal corpus entries.
+
+| Field | Type | Description |
+|---|---|---|
+| `doc_id` | int | Unique document unit ID |
+| `semantic_id` | string | Human-readable legal identifier |
+| `collection_name` | string | Parent legal collection |
+| `law_level` | string | Legal hierarchy level (e.g., Act, Decree, Rule) |
+| `law_name` | string | Law title |
+| `chapter` | string | Article/appendix label |
+| `chapter_description` | string | Article heading |
+| `text` | string | Legal text |
+| `related_doc_ids` | int[] (optional) | Citation/delegation-linked `doc_id` list |
+
+Notes:
+
+- Most rows include `related_doc_ids`; 54 rows do not.
+- `related_doc_ids` defines graph edges used for structure-aware retrieval.
+
+### 2) `realworld_qa.jsonl`
+
+Real-world public petition questions with official NFA answers.
+
+| Field | Type | Description |
+|---|---|---|
+| `question_id` | int | Question ID |
+| `question` | string | User question |
+| `answer` | string | Official expert answer |
+| `related_doc_ids` | int[] | Supporting legal document IDs |
+| `semantic_ids` | string[] | Supporting semantic identifiers |
+
+### 3) `multihop_qa_mcq.jsonl`
+
+Synthetic multiple-choice QA designed to test strict multi-hop dependency.
+
+| Field | Type | Description |
+|---|---|---|
+| `question_id` | int | Question ID |
+| `related_doc_ids` | int[] | Source document IDs used to construct the question |
+| `related_semantic_ids` | string[] | Semantic identifiers for source docs |
+| `question` | string | MCQ question |
+| `option_1` ~ `option_5` | string | Five answer options |
+| `answer_full` | int (1-5) | Correct option under full context |
+| `answer_partial` | int (1-5) | Correct option under partial context |
+
+Notes:
+
+- For all 3,395 rows, `answer_partial = 5` ("Cannot be answered with the given information").
+- This setup explicitly evaluates safe abstention under missing evidence.
+
+## Citation
+
+If you use this dataset, please cite the ACL 2026 paper.
+For now, you may cite the arXiv preprint:
+
+```bibtex
+@article{chae2026beyond,
+  title={Beyond Case Law: Evaluating Structure-Aware Retrieval and Safety in Statute-Centric Legal QA},
+  author={Chae, Kyubyung and Yeom, Jewon and Park, Jeongjae and Bae, Seunghyun and Jang, Ijun and Jin, Hyunbin and Jang, Jinkwan and Kim, Taesup},
+  journal={arXiv preprint arXiv:2604.06173},
+  year={2026}
+}
 ```
 
-Example output
+(We will update this section with the ACL Anthology entry once the proceedings version is available.)
 
-```
-[OK]  https://www.law.go.kr/...소방기본법  →  132 item(s)
-```
+## Contact
 
-The notebook writes a **newline‑delimited JSON (`*.jsonl`)** file containing:
-
-```json
-{"doc_id":0, "semantic_id":"소방기본법 제1장 1조", "chapter_body":"..."}
-```
-
----
-
-### 2. Evaluate retrievers (`retrieval_eval.py`)
-
-Benchmark TF‑IDF, BM25, BGE‑m3 (or any dense retreivers supported by SentenceTransformer in HuggingFace), DPR (or any subset) on a *docs* / *queries* pair.
-
-```bash
-python retrieval_eval.py \
-    --docs    data/law_docs.jsonl \
-    --queries data/train_queries.jsonl \
-    --methods tfidf,bm25,bge,dpr \
-    --topk 100 \
-    --expand_links            # RAG‑style link expansion
-    --device cuda:0           # cpu / cuda:<id> / mps
-```
-
-| Key flags                                                   | Purpose                                          |
-| ----------------------------------------------------------- | ------------------------------------------------ |
-| `--tfidf_max_features`                                      | vocabulary size (default 120 000)                |
-| `--bm25_k1`, `--bm25_b`                                     | BM25 hyper‑params                                |
-| `--bge_model_name`                                          | any Sentence‑Transformer (default `BAAI/bge-m3`) |
-| `--dpr_context_encoder_path`, `--dpr_question_encoder_path` | local DPR checkpoints                            |
-| `--batch_size`                                              | GPU memory vs. speed trade‑off                   |
-
-The script prints per‑method **Recall@{1,2,3,5,10,20,100} & MRR**, then saves `ir_metrics.csv`.
-
----
-
-### 3. Generate answers (`inference.py`)
-
-Run one or many LLMs with optional retrieval augmentation.
-
-```bash
-python inference.py \
-    --docs    data/doc.jsonl \
-    --queries data/dev_queries.jsonl \
-    --retriever bge          \        # tfidf / bm25 / bge
-    --topk 5                 \        # 0 = no RAG
-    --models  LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct \
-              openai:gpt-4o \
-    --out_dir rag_outputs \
-    --max_new_tokens 8192 \
-    --expand_with_links       \
-    --openai_key_file ~/.openai_key
-```
-
-Open‑source models are loaded via `AutoModelForCausalLM`; OpenAI models are indicated by the prefix `openai:`.
-`--oracle` makes the generator see **gold** document ids instead of retrieved ones (upper‑bound).
-
-Each model creates one JSONL file:
-
-```
-rag_outputs/
-  exaone-3.5-7.8b-instruct_bge_k5.jsonl
-  gpt-4o_bge_k5.jsonl
-```
-
-Every line copies the original query row and adds:
-
-```json
-"model_answer": "..."
-```
-
----
-
-### 4. Clean generations (`data_postprocessing.py`)
-
-Useful for LLMs that wrap answers with proprietary tags (e.g. `<think> … </think>`).
-
-```bash
-python data_postprocessing.py rag_outputs/llama-3-70b_bge_k5.jsonl \
-    --inplace           # overwrite file
-    --strip-think       # drop <think> blocks
-    --extra-regex "<noise>.*?</noise>"
-```
-
-| Option                                   | Explanation                                    |
-| ---------------------------------------- | -------------------------------------------------  |
-| `--strip-prompts` / `--no-strip-prompts` | remove \`assistant  :\` etc. |
-| `--new-field cleaned_answer`             | keep raw & add cleaned field instead of overwrite         |
-| `--backup`                               | save `.bak` before modifying                   |
-
----
-
-### 5. Score answers (`eval.py`)
-
-Compute **ROUGE, BERTScore, LLM Judge, and Win‑Rate** (model vs. gold) in one go.
-
-```bash
-python eval.py \
-    --input  rag_outputs/exaone-3.5-7.8b-instruct_bge_k5.jsonl \
-    --output results/exaone-3.5-7.8b-instruct_bge_k5_scores.jsonl \
-    --metrics bert,rouge,llm,winrate \
-    --oracle_docs data/doc.jsonl \
-    --openai_api_key $OPENAI_API_KEY
-```
-
-| Metric flag | Description                                                |
-| ----------- | ----------------------------------------------------------  |
-| `bert`      | `beomi/kcbert-base` on faithfulness & similarity |
-| `rouge`     | Rouge‑1/2/L/Lsum (stemming)                        |
-| `llm`       | LLM discrete pass/fail (0 or 1) |
-| `winrate`   | LLM pairwise A/B comparison                   |
-
-The script appends metric columns to each row, writes a new JSONL, and prints corpus‑level means:
-
-```
-Dataset-mean ▶ BERTScore=0.8423  ·  ROUGE-1 F1=0.6710  ·  LLM‑Score=0.79  ·  Win‑Rate=0.62
-```
-
----
+For questions about the dataset release, please open an issue in this repository.
