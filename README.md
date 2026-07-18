@@ -3,8 +3,8 @@
 Official dataset repository for the ACL 2026 paper:
 **Beyond Case Law: Evaluating Structure-Aware Retrieval and Safety in Statute-Centric Legal QA**
 
-Preprint: https://arxiv.org/abs/2604.06173
-Paper: https://aclanthology.org/2026.acl-long.2112/
+- Preprint: https://arxiv.org/abs/2604.06173
+- Paper: https://aclanthology.org/2026.acl-long.2112/
 
 ## Overview
 
