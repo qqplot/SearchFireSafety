@@ -165,7 +165,7 @@ python scripts/eval_realworld_graph_retrieval.py \
   --graph-pkl legal_explicit_graph.pkl \
   --qa-file data/realworld_qa.jsonl \
   --model-name BAAI/bge-m3 \
-  --save-json results_legal_graph_sar.json
+  --save-json results_legal_graph_sar_top100.json
 ```
 
 For the undirected graph, replace `--graph-pkl` and `--save-json`:
@@ -175,18 +175,19 @@ python scripts/eval_realworld_graph_retrieval.py \
   --graph-pkl legal_explicit_graph_undirected.pkl \
   --qa-file data/realworld_qa.jsonl \
   --model-name BAAI/bge-m3 \
-  --save-json results_legal_graph_sar_undirected.json
+  --save-json results_legal_graph_sar_top100_undirected.json
 ```
 
 ### Results
 
 The table below reports retrieval performance on `data/realworld_qa.jsonl`
-using `BAAI/bge-m3`. Values are percentages.
+using `BAAI/bge-m3`. Values are percentages. Rocchio is evaluated as a
+candidate-only top-100 reranker with `top_k=15`, `alpha=0.90`, and `beta=0.10`.
 
 | Method | R@10 | nDCG@10 | MRR@10 | R@20 | nDCG@20 | MRR@20 | R@50 | nDCG@50 | MRR@50 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Baseline | 53.14 | 37.35 | 35.26 | 61.46 | 39.61 | 35.83 | 72.66 | 42.07 | 36.16 |
-| Rocchio | 46.66 | 31.22 | 28.64 | 57.18 | 34.06 | 29.40 | 69.57 | 36.78 | 29.78 |
+| Rocchio | 52.87 | 37.45 | 35.37 | 61.87 | 39.92 | 36.00 | 72.77 | 42.31 | 36.32 |
 | SAR (Directed) | 55.45 | 38.22 | 35.59 | 63.62 | 40.47 | 36.15 | 73.46 | 42.65 | 36.45 |
 | SAR (Undirected) | 54.18 | 37.77 | 35.37 | 62.97 | 40.18 | 35.97 | 73.40 | 42.48 | 36.30 |
 

@@ -176,6 +176,8 @@ def run_rocchio(
     top_k: int,
     alpha: float,
     beta: float,
+    mode: str,
+    top_k_freeze: int,
     return_k: int,
 ) -> list[int]:
     feedback = corpus_emb[init_idx[:top_k]]
@@ -183,8 +185,21 @@ def run_rocchio(
     new_query = (alpha * query_vec) + (beta * avg_doc)
     new_query = new_query.reshape(1, -1).astype("float32", copy=False)
     new_query = normalize_rows(new_query)[0]
-    scores = np.maximum(corpus_emb @ new_query, 0.0)
-    reranked_idx = topk_indices(scores, return_k)
+
+    if mode == "candidate":
+        candidate_idx = init_idx[:return_k]
+        candidate_scores = np.maximum(corpus_emb[candidate_idx] @ new_query, 0.0)
+        if top_k_freeze > 0:
+            freeze_n = min(top_k_freeze, candidate_scores.shape[0])
+            candidate_scores[:freeze_n] = candidate_scores[:freeze_n] + 100.0
+        order = np.argsort(-candidate_scores)
+        reranked_idx = candidate_idx[order]
+    elif mode == "full":
+        scores = np.maximum(corpus_emb @ new_query, 0.0)
+        reranked_idx = topk_indices(scores, return_k)
+    else:
+        raise ValueError(f"Unsupported Rocchio mode: {mode}")
+
     return [idx_to_docid[int(idx)] for idx in reranked_idx]
 
 
@@ -276,8 +291,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--init-retrieval-k", type=int, default=100)
     parser.add_argument("--return-k", type=int, default=100)
     parser.add_argument("--rocchio-top-k", type=int, default=15)
-    parser.add_argument("--rocchio-alpha", type=float, default=0.3)
-    parser.add_argument("--rocchio-beta", type=float, default=0.7)
+    parser.add_argument("--rocchio-alpha", type=float, default=0.9)
+    parser.add_argument("--rocchio-beta", type=float, default=0.1)
+    parser.add_argument(
+        "--rocchio-top-k-freeze",
+        type=int,
+        default=0,
+        help="Keep the initial top-N dense results above other Rocchio-reranked candidates.",
+    )
+    parser.add_argument(
+        "--rocchio-mode",
+        choices=["candidate", "full"],
+        default="candidate",
+        help=(
+            "candidate reranks only the initial top-k candidate set; "
+            "full reruns retrieval over the whole corpus after query expansion."
+        ),
+    )
     parser.add_argument("--sar-initial-k", "--cir-initial-k", dest="sar_initial_k", type=int, default=15)
     parser.add_argument("--sar-beta", "--cir-beta", dest="sar_beta", type=float, default=0.3)
     parser.add_argument("--top-k-freeze", type=int, default=5)
@@ -349,6 +379,8 @@ def main() -> None:
             top_k=args.rocchio_top_k,
             alpha=args.rocchio_alpha,
             beta=args.rocchio_beta,
+            mode=args.rocchio_mode,
+            top_k_freeze=args.rocchio_top_k_freeze,
             return_k=args.return_k,
         )
         sar_ids = run_sar_explicit(
@@ -389,6 +421,15 @@ def main() -> None:
                     "qa_file": str(args.qa_file),
                     "model_name": args.model_name,
                     "metric_k": args.metric_k,
+                    "rocchio_mode": args.rocchio_mode,
+                    "rocchio_top_k": args.rocchio_top_k,
+                    "rocchio_alpha": args.rocchio_alpha,
+                    "rocchio_beta": args.rocchio_beta,
+                    "rocchio_top_k_freeze": args.rocchio_top_k_freeze,
+                    "sar_initial_k": args.sar_initial_k,
+                    "sar_beta": args.sar_beta,
+                    "top_k_freeze": args.top_k_freeze,
+                    "max_pool_size": args.max_pool_size,
                     "results": results,
                 },
                 f,
