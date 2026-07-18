@@ -158,6 +158,46 @@ The undirected graph contains:
 - 2,276 graph nodes with edges
 - 15,262 undirected adjacency entries
 
+### SAR Pseudo Algorithm
+
+```text
+Input:
+  q: user question
+  D: legal document corpus
+  G: explicit legal graph, where G[source_doc_id] = [neighbor_doc_id, ...]
+  K = 100: dense candidate size
+  M = 15: SAR voting seed size
+  F = 5: frozen dense anchor size
+  beta = 0.30: structural bonus weight
+
+1. Dense retrieval
+   Encode q and all documents in D.
+   Compute dense score S_dense(d) for each document d.
+   Let C be the top-K documents by S_dense.
+   Let Seeds be the top-M documents in C.
+
+2. Structural voting
+   Initialize bonus B(d) = 0 for each document d in C.
+   For each seed s in Seeds:
+       neighbors = G[s]
+       seed_penalty = log(|neighbors| + 1) if |neighbors| > 1 else 1
+       vote = S_dense(s) / seed_penalty
+
+       For each neighbor n in neighbors:
+           If n is not in C, skip it in strict top-100 mode.
+           target_penalty = log(indegree(n) + 1) if indegree(n) > 1 else 1
+           B(n) = B(n) + vote / target_penalty
+
+3. Residual fusion
+   For each candidate d in C:
+       If d is one of the top-F dense anchors:
+           keep d above the remaining candidates.
+       Else:
+           S_SAR(d) = S_dense(d) + beta * B(d) * (1 - S_dense(d))
+
+4. Return candidates C sorted by S_SAR.
+```
+
 ### Run Retrieval Evaluation
 
 ```bash

@@ -112,6 +112,18 @@ def build_legal_reference_graph(
     valid_doc_ids: set[int],
     undirected: bool,
 ) -> tuple[dict[int, set[int]], dict[str, Any]]:
+    """Build an explicit document-link graph from `related_doc_ids`.
+
+    Each legal document row is treated as a source node:
+
+        source_id = row["doc_id"]
+        targets = row["related_doc_ids"]
+
+    The default directed graph stores `source_id -> target_id`, meaning the
+    source document explicitly cites, delegates to, or otherwise references the
+    target document. When `undirected=True`, the reverse edge is also added so
+    SAR can propagate evidence across either direction of the same legal link.
+    """
     graph: dict[int, set[int]] = defaultdict(set)
     unknown_doc_ids = Counter()
     source_with_edges = 0
@@ -127,17 +139,25 @@ def build_legal_reference_graph(
             source_with_edges += 1
 
         for target_id in doc_ids:
+            # Self-links do not add useful structural evidence for reranking.
             if target_id == source_id:
                 self_loops += 1
                 continue
+
+            # Keep only links whose target exists in the released legal corpus.
+            # Missing targets are reported in metadata instead of failing hard.
             if target_id in valid_doc_ids:
                 graph[source_id].add(target_id)
                 referenced_targets.add(target_id)
                 if undirected:
+                    # Add the reverse edge to treat citation/delegation links as
+                    # symmetric evidence paths during SAR propagation.
                     graph[target_id].add(source_id)
             else:
                 unknown_doc_ids[target_id] += 1
 
+    # `adjacency_entry_count` counts stored adjacency-list entries. In the
+    # undirected graph, each valid legal relation can contribute two entries.
     adjacency_entries = sum(len(neighbors) for neighbors in graph.values())
     stats = {
         "legal_doc_count": len(legal_docs),

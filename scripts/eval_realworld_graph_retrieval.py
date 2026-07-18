@@ -216,31 +216,50 @@ def run_sar_explicit(
     max_pool_size: int,
     return_k: int,
 ) -> list[int]:
+    """Rerank dense candidates using explicit legal-document links.
+
+    `graph` is an adjacency list keyed by integer `doc_id`:
+
+        graph[source_doc_id] = [neighbor_doc_id, ...]
+
+    In the directed graph, neighbors are documents explicitly referenced by the
+    source document's `related_doc_ids`. In the undirected graph, reverse links
+    are also added, so neighbors are all documents connected by an explicit
+    legal relation in either direction.
+    """
+    # Start from the dense top-K candidates. With max_pool_size=return_k=100,
+    # this stays a strict top-100 reranker; larger pools may admit linked docs.
     candidate_pool = {int(idx): float(scores[int(idx)]) for idx in init_idx}
     bonuses: dict[int, float] = {}
 
-    for p_idx_raw in init_idx[:sar_initial_k]:
-        p_idx = int(p_idx_raw)
-        p_id = idx_to_docid[p_idx]
-        p_score = float(scores[p_idx])
-        neighbors = graph.get(p_id, [])
+    # Treat the strongest dense hits as voting seeds. Each seed transfers part
+    # of its dense score to explicitly linked neighbors in the legal graph.
+    for seed_idx_raw in init_idx[:sar_initial_k]:
+        seed_idx = int(seed_idx_raw)
+        seed_doc_id = idx_to_docid[seed_idx]
+        seed_score = float(scores[seed_idx])
+        neighbors = graph.get(seed_doc_id, [])
         if not neighbors:
             continue
 
+        # Penalize broad seeds that point to many documents. This keeps generic
+        # citation-heavy provisions from casting overly strong votes.
         penalty_out = math.log(len(neighbors) + 1) if len(neighbors) > 1 else 1.0
-        vote_power = p_score / penalty_out
+        vote_power = seed_score / penalty_out
 
-        for n_id in neighbors:
-            c_idx = docid_to_idx.get(int(n_id))
-            if c_idx is None or c_idx == p_idx:
+        for neighbor_doc_id in neighbors:
+            candidate_idx = docid_to_idx.get(int(neighbor_doc_id))
+            if candidate_idx is None or candidate_idx == seed_idx:
                 continue
 
-            pop = indegree.get(int(n_id), 1)
-            penalty_in = math.log(pop + 1) if pop > 1 else 1.0
-            bonuses[c_idx] = bonuses.get(c_idx, 0.0) + (vote_power / penalty_in)
+            # Penalize popular targets that many documents cite, since they are
+            # more likely to be generic anchors than query-specific evidence.
+            popularity = indegree.get(int(neighbor_doc_id), 1)
+            penalty_in = math.log(popularity + 1) if popularity > 1 else 1.0
+            bonuses[candidate_idx] = bonuses.get(candidate_idx, 0.0) + (vote_power / penalty_in)
 
-            if c_idx not in candidate_pool and len(candidate_pool) < max_pool_size:
-                candidate_pool[c_idx] = 0.0
+            if candidate_idx not in candidate_pool and len(candidate_pool) < max_pool_size:
+                candidate_pool[candidate_idx] = 0.0
 
     top_freeze_idx = {int(idx) for idx in init_idx[:top_k_freeze]}
     reranked = []
@@ -250,6 +269,9 @@ def run_sar_explicit(
         if idx in top_freeze_idx:
             final_s = base_s + 100.0
         else:
+            # Residual fusion: structural evidence mainly helps documents whose
+            # dense score still has room to grow, while high-confidence dense
+            # matches remain comparatively stable.
             final_s = base_s + (sar_beta * bonus * (1.0 - base_s))
         reranked.append((idx, final_s))
 
@@ -258,6 +280,19 @@ def run_sar_explicit(
 
 
 def indegree_from_graph(graph: dict[int, list[int]]) -> Counter:
+    """Return target popularity counts from an adjacency-list graph.
+
+    The input graph has the same shape used by SAR:
+
+        graph[source_doc_id] = [neighbor_doc_id, ...]
+
+    For directed graphs this is an in-degree count. For undirected graphs,
+    reverse edges are already present, so the count is effectively degree.
+    """
+    # Count how often each document appears as a linked target.
+    # SAR uses this as a popularity penalty: documents cited by many seeds are
+    # treated as generic anchors and receive a smaller structural bonus. For an
+    # undirected graph, this becomes the number of adjacent documents.
     indegree = Counter()
     for neighbors in graph.values():
         for neighbor in neighbors:
