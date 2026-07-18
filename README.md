@@ -165,7 +165,7 @@ python scripts/eval_realworld_graph_retrieval.py \
   --graph-pkl legal_explicit_graph.pkl \
   --qa-file data/realworld_qa.jsonl \
   --model-name BAAI/bge-m3 \
-  --save-json results_legal_graph_sar_top100.json
+  --save-json results_legal_graph_sar.json
 ```
 
 For the undirected graph, replace `--graph-pkl` and `--save-json`:
@@ -175,7 +175,7 @@ python scripts/eval_realworld_graph_retrieval.py \
   --graph-pkl legal_explicit_graph_undirected.pkl \
   --qa-file data/realworld_qa.jsonl \
   --model-name BAAI/bge-m3 \
-  --save-json results_legal_graph_sar_top100_undirected.json
+  --save-json results_legal_graph_sar_undirected.json
 ```
 
 ### Results
