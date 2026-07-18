@@ -1,0 +1,6 @@
+numpy>=1.26,<3
+sentence-transformers>=4.1,<5
+
+# Optional: only needed when building legacy graph payloads with
+# `python scripts/build_legal_explicit_graph.py --nodes-format dataframe`.
+# pandas>=2.2,<3
